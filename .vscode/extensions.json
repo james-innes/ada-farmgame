@@ -1,0 +1,19 @@
+{
+  "recommendations": [
+    "redhat.vscode-yaml",
+    "ms-azuretools.vscode-cosmosdb",
+    "msjsdiag.debugger-for-chrome",
+    "ms-azure-devops.azure-pipelines",
+    "ms-vsts.team",
+    "streetsidesoftware.code-spell-checker",
+    "naumovs.color-highlight",
+    "ms-azuretools.vscode-docker",
+    "editorconfig.editorconfig",
+    "ionutvmi.path-autocomplete",
+    "esbenp.prettier-vscode",
+    "vscode-icons-team.vscode-icons",
+    "msjsdiag.debugger-for-chrome",
+    "dbaeumer.vscode-eslint"
+  ]
+}
+

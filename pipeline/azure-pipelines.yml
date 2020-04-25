@@ -1,0 +1,155 @@
+trigger:
+- master
+
+resources:
+- repo: self
+
+stages:
+
+- stage: Build
+
+  variables:
+    Azure.ResourceGroupName: '{{#toAlphaNumericString repositoryName 50}}{{/toAlphaNumericString}}'
+    Azure.ServiceConnectionId: '{{ azureServiceConnectionId }}'
+    Azure.Location: 'eastus'
+    ACR.Name: '{{#toAlphaNumericString repositoryName 46}}{{/toAlphaNumericString}}{{#shortGuid}}{{/shortGuid}}'
+    ACR.ImageName: '$(ACR.Name):$(Build.BuildId)'
+    ACR.FullName: '$(ACR.Name).azurecr.io'
+    System.Debug: 'false'
+
+  jobs:
+
+  - job: Linting
+    displayName: Enforce formating using ESLint
+
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - script: npm
+      displayName: 'Install dependencies'
+
+    - script: npm build
+      displayName: 'Build'
+
+    - script: npm lint
+      displayName: 'Test: ESLint'
+
+
+  - job: VerifyResources
+    displayName: Create required resources
+    
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+
+    - task: AzureResourceGroupDeployment@2
+      displayName: 'Azure Deployment:Create or Update Azure Container Registry'
+      inputs:
+        azureSubscription: '$(Azure.ServiceConnectionId)'
+        resourceGroupName: '$(Azure.ResourceGroupName)'
+        location: '$(Azure.Location)'
+        templateLocation: 'URL of the file'
+        csmFile: 'acr.json'
+        csmParametersFile: 'pipeline/acr.parameters.json'
+        overrideParameters: '-registryName "$(ACR.Name)" -registryLocation "$(Azure.Location)"'
+        deploymentMode: 'Validation'
+
+    - task: AzureResourceGroupDeployment@2
+      displayName: 'Azure Deployment:Create Or Update Azure Cosmos DB SQL'
+      inputs:
+        azureSubscription: '$(Azure.ServiceConnectionId)'
+        resourceGroupName: '$(Azure.ResourceGroupName)'
+        location: '$(Azure.Location)'
+        csmFile: 'pipeline/cosmosdb-sql.json'
+        csmParametersFile: 'pipeline/cosmosdb.parameters.json'
+        deploymentMode: 'Validation'
+
+    - task: AzurePowerShell@3
+      displayName: 'Test existing resources'
+      inputs:
+        azureSubscription:  'MPN'
+        ScriptType: InlineScript
+        Inline: |
+            Install-PackageProvider -Name NuGet -Force -Scope CurrentUser
+            Install-Module -Name ARMHelper -Force -Scope CurrentUser
+            Import-Module -Name ARMHelper
+            Test-ARMExistingResource -ResourceGroupName StorageAccount_01 -TemplateFile "$(Build.SourcesDirectory)\pipeline\acr.json" -TemplateParameterFile "$(Build.SourcesDirectory)\pipeline\acr.parameters.json" overrideParameters '-registryName "$(ACR.Name)" -registryLocation "$(Azure.Location)"' -Mode Complete
+            Test-ARMExistingResource -ResourceGroupName VirtualNetwork_01 -TemplateFile "$(Build.SourcesDirectory)\pipeline\cosmosdb.json" -TemplateParameterFile "$(Build.SourcesDirectory)\pipeline\cosmosdb.parameters.json" -Mode Complete
+        FailOnStandardError: true
+        azurePowerShellVersion: LatestVersion
+
+    - task: AzurePowerShell@3
+      displayName: 'Show deployed resources'
+      inputs:
+        azureSubscription:  'MPN'
+        ScriptType: InlineScript
+        Inline: |
+            Test-ARMDeploymentResource -ResourceGroupName StorageAccount_01 -TemplateFile "$(Build.SourcesDirectory)\pipeline\acr.json" -TemplateParameterFile "$(Build.SourcesDirectory)\pipeline\acr.parameters.json" overrideParameters '-registryName "$(ACR.Name)" -registryLocation "$(Azure.Location)"' -Mode Complete | Select-Object *
+            Test-ARMDeploymentResource -ResourceGroupName VirtualNetwork_01 -TemplateFile "$(Build.SourcesDirectory)\pipeline\cosmosdb.json" -TemplateParameterFile "$(Build.SourcesDirectory)\pipeline\cosmosdb.parameters.json" -Mode Complete | Select-Object *
+        FailOnStandardError: true
+        azurePowerShellVersion: LatestVersion
+
+
+  - job: BuildImage
+    displayName: Build
+
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - task: Docker@1
+      displayName: 'Build an image'
+      inputs:
+        azureSubscriptionEndpoint: '$(Azure.ServiceConnectionId)'
+        azureContainerRegistry: '$(ACR.FullName)'
+        imageName: '$(ACR.ImageName)'
+        command: build
+        dockerFile: '**/Dockerfile'
+
+
+
+- stage: Deploy
+  condition:
+    and(succeeded(), eq(variables['State'], 'Production'))
+  jobs:
+
+  - job: BuildJob
+    pool:
+      vmImage: windows-2019
+    steps:
+    - task: AzureResourceGroupDeployment@2
+      displayName: 'Azure Deployment:Create Or Update Resource Group action on OC-DC'
+      inputs:
+        azureSubscription: '$(Azure.ServiceConnectionId)'
+        resourceGroupName: '$(Azure.ResourceGroupName)'
+        location: '$(Azure.Location)'
+        templateLocation: 'URL of the file'
+        csmFile: 'acr.json'
+        csmParametersFile: 'pipeline/acr.parameters.json'
+        overrideParameters: '-registryName "$(ACR.Name)" -registryLocation "$(Azure.Location)"'
+        
+    - task: AzureResourceGroupDeployment@2
+      displayName: 'Azure Deployment:Create Or Update Resource Group action on OC-DC'
+      inputs:
+        azureSubscription: '$(Azure.ServiceConnectionId)'
+        resourceGroupName: '$(Azure.ResourceGroupName)'
+        location: '$(Azure.Location)'
+        csmFile: 'pipeline/cosmosdb-sql.json'
+        csmParametersFile: 'pipeline/cosmosdb.parameters.json'
+        
+  - job: DeployImage
+    displayName: Deploy Docker Image
+
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - task: Docker@1
+      displayName: 'Push an image'
+      inputs:
+        azureSubscriptionEndpoint: '$(Azure.ServiceConnectionId)'
+        azureContainerRegistry: '$(ACR.FullName)'
+        imageName: '$(ACR.ImageName)'
+        command: push
